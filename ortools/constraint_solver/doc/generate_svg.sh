@@ -44,10 +44,10 @@ set -x
 # LIFO
 ./routing_svg.py --pickup-delivery --lifo --solution > vrp_pickup_delivery_lifo_solution.svg
 
+# Ressource Problem
+./routing_svg.py --resources > vrp_resources.svg
+./routing_svg.py --resources --solution > vrp_resources_solution.svg
+
 ## Fuel Problem
 #./routing_svg.py --fuel > vrpf.svg
 #./routing_svg.py --fuel --solution > vrpf_solution.svg
-#
-## Ressource Problem
-#./routing_svg.py --resource > vrpr.svg
-#./routing_svg.py --resource --solution > vrpr_solution.svg

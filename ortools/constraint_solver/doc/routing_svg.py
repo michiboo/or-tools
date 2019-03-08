@@ -26,7 +26,6 @@ from ortools.constraint_solver import routing_enums_pb2
 # [START data_model]
 class DataModel:  # pylint: disable=too-many-instance-attributes
     """Stores the data for the problem."""
-
     def __init__(self, args):
         # Locations in block units
         locations = \
@@ -131,7 +130,7 @@ class DataModel:  # pylint: disable=too-many-instance-attributes
             [7, 14, 9, 16, 14, 8, 5, 10, 6, 5, 4, 10, 8, 6, 2, 9, 0],
         ]
         self._time_windows = [
-            (0, 0),  # depot
+            (0, 5),  # depot
             (10, 15),  # 1
             (10, 15),  # 2
             (5, 10),  # 3
@@ -155,11 +154,17 @@ class DataModel:  # pylint: disable=too-many-instance-attributes
             self._demands = [0, 1, 1, 2, 4, 2, 4, 8, 8, 1, 2, 1, 2, 4, 4, 8, 8]
         self._pickups_deliveries = [
             [1, 6], [2, 10], [4, 3], [5, 9], [7, 8], [15, 11], [13, 12], [16, 14],]
+
         if args['tsp'] is True:
             self._num_vehicles = 1
         else:
             self._num_vehicles = 4
-        self._vehicle_capacities = [15, 15, 15, 15]
+            self._vehicle_capacities = [15, 15, 15, 15]
+
+        if args['resources'] is True:
+            self._vehicle_load_time = 3
+            self._vehicle_unload_time = 2
+
         self._depot = 0
         self._starts = [1, 2, 15, 16]
         self._ends = [0, 0, 0, 0]
@@ -203,6 +208,16 @@ class DataModel:  # pylint: disable=too-many-instance-attributes
     def vehicle_capacities(self):
         """Gets the capacity of each vehicles."""
         return self._vehicle_capacities
+
+    @property
+    def vehicle_load_time(self):
+        """Gets the load time of each vehicles."""
+        return self._vehicle_load_time
+
+    @property
+    def vehicle_unload_time(self):
+        """Gets the unload time of each vehicles."""
+        return self._vehicle_unload_time
 
     @property
     def depot(self):
@@ -663,6 +678,11 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
         action='store_true',
         help='use capacity constraints')
     parser.add_argument(
+        '-r',
+        '--resources',
+        action='store_true',
+        help='use resources constraints')
+    parser.add_argument(
         '-dn',
         '--drop-nodes',
         action='store_true',
@@ -753,7 +773,7 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
     demand_callback_index = routing.RegisterUnaryTransitCallback(
         demand_callback)
 
-    if args['time_windows'] is True:
+    if (args['time_windows'] is True) or (args['resources'] is True):
         routing.SetArcCostEvaluatorOfAllVehicles(time_callback_index)
     else:
         routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
@@ -764,14 +784,17 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
                              dimension_name)
         distance_dimension = routing.GetDimensionOrDie(dimension_name)
         distance_dimension.SetGlobalSpanCostCoefficient(100)
+
     if (args['capacity'] is True) or (args['drop_nodes'] is True):
         routing.AddDimensionWithVehicleCapacity(
             demand_callback_index, 0, data.vehicle_capacities, True, 'Capacity')
+
     if args['drop_nodes'] is True:
         # Allow to drop nodes.
         penalty = 1000
         for node in range(1, len(data.locations)):
             routing.AddDisjunction([manager.NodeToIndex(node)], penalty)
+
     if args['pickup_delivery'] is True:
         dimension_name = 'Distance'
         routing.AddDimension(distance_callback_index, 0, 3000, True,
@@ -794,14 +817,16 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
         if args['lifo'] is True:
             routing.SetPickupAndDeliveryPolicyOfAllVehicles(
                 pywrapcp.RoutingModel.LIFO)
+
     if args['starts_ends'] is True:
         dimension_name = 'Distance'
         routing.AddDimension(distance_callback_index, 0, 2000, True,
                              dimension_name)
         distance_dimension = routing.GetDimensionOrDie(dimension_name)
         distance_dimension.SetGlobalSpanCostCoefficient(100)
-    if args['time_windows'] is True:
-        time = 'Time'
+
+    time = 'Time'
+    if (args['time_windows'] is True) or (args['resources'] is True):
         routing.AddDimension(time_callback_index, 30, 30, False, time)
         time_dimension = routing.GetDimensionOrDie(time)
         # Add time window constraints for each location except depot
@@ -821,6 +846,39 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
             time_dimension.CumulVar(index).SetRange(time_window[0],
                                                     time_window[1])
             routing.AddToAssignment(time_dimension.SlackVar(index))
+
+        # Instantiate route start and end times to produce feasible times.
+        for vehicle_id in range(data.num_vehicles):
+          routing.AddVariableMinimizedByFinalizer(
+              time_dimension.CumulVar(routing.End(vehicle_id)))
+          routing.AddVariableMinimizedByFinalizer(
+              time_dimension.CumulVar(routing.Start(vehicle_id)))
+
+    if args['resources'] is True:
+        # Add resource constraints at the depot.
+        time_dimension = routing.GetDimensionOrDie(time)
+        solver = routing.solver()
+        intervals = []
+        for i in range(data['num_vehicles']):
+          # Add time windows at start of routes
+          intervals.append(solver.FixedDurationIntervalVar(
+              time_dimension.CumulVar(routing.Start(i)),
+              data.vehicle_load_time,
+              'depot_interval')
+                          )
+          # Add time windows at end of routes.
+          intervals.append(solver.FixedDurationIntervalVar(
+              time_dimension.CumulVar(routing.End(i)),
+              data.vehicle_unload_time,
+              'depot_interval ')
+                          )
+
+        depot_usage = [1 for i in range(data.num_vehicles * 2)]
+        solver.AddConstraint(solver.Cumulative(
+            intervals,
+            depot_usage,
+            data['depot_capacity'],
+            'depot'))
 
     # Setting first solution heuristic (cheapest addition).
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
